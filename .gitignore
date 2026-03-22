@@ -1,0 +1,24 @@
+# Build artifacts
+build/
+OBJ/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# ROS2 build outputs
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ros2_ws/build_clean/
+ros2_ws/install_clean/
+
+# CMake generated files (if in source tree)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Editor/OS
+.vscode/
+.DS_Store
