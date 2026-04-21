@@ -7,9 +7,36 @@ set -e # Exit on error
 # Configuration
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
+ENCODER_BUILD_DIR="${PROJECT_ROOT}/build_encoder"
+MOTOR86_BUILD_DIR="${PROJECT_ROOT}/build_motor86"
 FIRMWARE_BIN="${BUILD_DIR}/STM32_KEY_PROJECT.bin"
-SERIAL_PORT_DEFAULT="/dev/ttyUSB0"
+ENCODER_FIRMWARE_BIN="${ENCODER_BUILD_DIR}/STM32_KEY_PROJECT.bin"
+MOTOR86_FIRMWARE_BIN="${MOTOR86_BUILD_DIR}/STM32_KEY_PROJECT.bin"
+SERIAL_PORT_DEFAULT="auto"
 SERIAL_BAUD_DEFAULT="115200"
+
+detect_serial_port() {
+    local requested_port="$1"
+    local candidate
+    local candidates=()
+
+    if [ -n "$requested_port" ] && [ -e "$requested_port" ]; then
+        echo "$requested_port"
+        return 0
+    fi
+
+    while IFS= read -r candidate; do
+        candidates+=("$candidate")
+    done < <(ls -1 /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | sort -V)
+
+    if [ "${#candidates[@]}" -eq 0 ]; then
+        return 1
+    fi
+
+    # Prefer the most recently numbered node (common after replug in WSL/USBIP).
+    echo "${candidates[-1]}"
+    return 0
+}
 
 ensure_build_dir() {
     local cache_file="${BUILD_DIR}/CMakeCache.txt"
@@ -34,8 +61,12 @@ print_usage() {
     echo "  (empty)   - Build and Flash directly"
     echo "  build     - Only build the firmware"
     echo "  flash     - Only flash the existing firmware"
-    echo "  serial [port] [baud] - Flash over UART bootloader (CH340, etc.)"
-    echo "  serial-flymcu [port] [baud] - UART flash with FlyMcu-style DTR/RTS timing"
+    echo "  encoder-build - Build encoder motor app firmware"
+    echo "  encoder-serial-flymcu [port] [baud] - Flash encoder app over UART (port optional, auto-detect if missing)"
+    echo "  motor86-build - Build 86 motor app firmware"
+    echo "  motor86-serial-flymcu [port] [baud] - Flash 86 motor app over UART (port optional, auto-detect if missing)"
+    echo "  serial [port] [baud] - Flash over UART bootloader (CH340, etc.; port optional, auto-detect if missing)"
+    echo "  serial-flymcu [port] [baud] - UART flash with FlyMcu-style DTR/RTS timing (port optional, auto-detect if missing)"
     echo "  clean     - Clean the build directory"
     echo "  help      - Show this message"
 }
@@ -50,6 +81,32 @@ build_firmware() {
         -DCMAKE_BUILD_TYPE=Release
     cmake --build "$BUILD_DIR" -j"$(nproc)"
     echo "=== Build Complete ==="
+}
+
+build_encoder_firmware() {
+    echo "=== Building ENCODER MOTOR firmware ==="
+    mkdir -p "$ENCODER_BUILD_DIR"
+    cmake \
+        -S "$PROJECT_ROOT" \
+        -B "$ENCODER_BUILD_DIR" \
+        -DCMAKE_TOOLCHAIN_FILE="$PROJECT_ROOT/arm-none-eabi-gcc.cmake" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DENCODER_MOTOR_APP=ON
+    cmake --build "$ENCODER_BUILD_DIR" -j"$(nproc)"
+    echo "=== ENCODER MOTOR Build Complete ==="
+}
+
+build_motor86_firmware() {
+    echo "=== Building MOTOR86 firmware ==="
+    mkdir -p "$MOTOR86_BUILD_DIR"
+    cmake \
+        -S "$PROJECT_ROOT" \
+        -B "$MOTOR86_BUILD_DIR" \
+        -DCMAKE_TOOLCHAIN_FILE="$PROJECT_ROOT/arm-none-eabi-gcc.cmake" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DMOTOR86_APP=ON
+    cmake --build "$MOTOR86_BUILD_DIR" -j"$(nproc)"
+    echo "=== MOTOR86 Build Complete ==="
 }
 
 flash_firmware() {
@@ -77,7 +134,18 @@ flash_firmware() {
 
 flash_firmware_serial() {
     local serial_port="${1:-$SERIAL_PORT_DEFAULT}"
+    local original_port="$serial_port"
     local serial_baud="${2:-$SERIAL_BAUD_DEFAULT}"
+
+    if ! serial_port=$(detect_serial_port "$serial_port"); then
+        echo "Error: Serial port $original_port does not exist, and no /dev/ttyUSB* or /dev/ttyACM* was detected."
+        echo "Check USB passthrough and run: ls -l /dev/ttyUSB* /dev/ttyACM*"
+        exit 1
+    fi
+
+    if [ "$serial_port" != "$original_port" ]; then
+        echo "Auto-detected serial port: $serial_port (requested: $original_port)"
+    fi
 
     echo "=== Flashing to STM32 over UART (${serial_port}, ${serial_baud}) ==="
     if [ ! -f "$FIRMWARE_BIN" ]; then
@@ -91,12 +159,6 @@ flash_firmware_serial() {
         exit 1
     fi
 
-    if [ ! -e "$serial_port" ]; then
-        echo "Error: Serial port $serial_port does not exist."
-        echo "Check usbipd attach status and CH340 driver binding in WSL."
-        exit 1
-    fi
-
     echo "Tip: Make sure BOOT0=1 and reset the MCU before UART flashing."
     STM32_Programmer_CLI -c port="$serial_port" br="$serial_baud" P=EVEN \
         -w "$FIRMWARE_BIN" 0x08000000 -v -rst
@@ -104,11 +166,88 @@ flash_firmware_serial() {
     echo "=== UART Flash Complete ==="
 }
 
+run_stm32flash_write() {
+    local serial_port="$1"
+    local serial_baud="$2"
+    local firmware_bin="$3"
+    local use_flymcu_timing="$4"
+
+    local -a cmd=(stm32flash -b "$serial_baud" -m 8e1 -w "$firmware_bin" -v -R)
+    if [ "$use_flymcu_timing" = "1" ]; then
+        # Entry: DTR low + RTS high, then release DTR.
+        # Exit: RTS low + DTR high.
+        cmd+=(-i '-dtr&rts,dtr:-rts&dtr')
+    fi
+    cmd+=("$serial_port")
+
+    if [ -w "$serial_port" ]; then
+        "${cmd[@]}"
+    else
+        echo "No write permission on $serial_port, retrying with sudo..."
+        sudo "${cmd[@]}"
+    fi
+}
+
+flash_with_stm32flash_retries() {
+    local firmware_bin="$1"
+    local serial_port="$2"
+    local serial_baud="$3"
+    local title="$4"
+
+    local -a bauds=("$serial_baud" 57600 38400)
+    local tried=""
+    local b=""
+
+    echo "=== $title ==="
+
+    # Phase 1: try FlyMcu DTR/RTS timing first.
+    for b in "${bauds[@]}"; do
+        if [[ " $tried " == *" $b "* ]]; then
+            continue
+        fi
+        tried+=" $b"
+        echo "Attempt (FlyMcu timing): baud=$b"
+        if run_stm32flash_write "$serial_port" "$b" "$firmware_bin" 1; then
+            echo "=== UART FlyMcu Flash Complete ==="
+            return 0
+        fi
+    done
+
+    echo "FlyMcu timing failed for all baud rates."
+    echo "Fallback: Please set BOOT0=1 manually, press RESET once, then keep board in system bootloader."
+
+    # Phase 2: manual BOOT0 fallback without DTR/RTS sequence.
+    for b in "${bauds[@]}"; do
+        echo "Attempt (manual BOOT0 mode): baud=$b"
+        if run_stm32flash_write "$serial_port" "$b" "$firmware_bin" 0; then
+            echo "=== UART Manual-Boot Flash Complete ==="
+            return 0
+        fi
+    done
+
+    echo "Error: Unable to enter STM32 serial bootloader."
+    echo "Checklist:"
+    echo "  1) BOOT0=1 before reset, BOOT0=0 after flash"
+    echo "  2) TX/RX/GND wiring is correct"
+    echo "  3) Serial port is not occupied (fuser -v $serial_port)"
+    return 1
+}
+
 flash_firmware_serial_flymcu() {
     local serial_port="${1:-$SERIAL_PORT_DEFAULT}"
+    local original_port="$serial_port"
     local serial_baud="${2:-$SERIAL_BAUD_DEFAULT}"
 
-    echo "=== Flashing over UART (FlyMcu timing: DTR low reset, RTS high boot) ==="
+    if ! serial_port=$(detect_serial_port "$serial_port"); then
+        echo "Error: Serial port $original_port does not exist, and no /dev/ttyUSB* or /dev/ttyACM* was detected."
+        echo "Check USB passthrough and run: ls -l /dev/ttyUSB* /dev/ttyACM*"
+        exit 1
+    fi
+
+    if [ "$serial_port" != "$original_port" ]; then
+        echo "Auto-detected serial port: $serial_port (requested: $original_port)"
+    fi
+
     if [ ! -f "$FIRMWARE_BIN" ]; then
         echo "Error: Firmware file $FIRMWARE_BIN not found! Run 'build' first."
         exit 1
@@ -120,18 +259,68 @@ flash_firmware_serial_flymcu() {
         exit 1
     fi
 
-    if [ ! -e "$serial_port" ]; then
-        echo "Error: Serial port $serial_port does not exist."
-        echo "Check usbipd attach status and CH340 driver binding in WSL."
+    flash_with_stm32flash_retries "$FIRMWARE_BIN" "$serial_port" "$serial_baud" \
+        "Flashing over UART (FlyMcu timing + manual BOOT0 fallback)"
+}
+
+flash_encoder_serial_flymcu() {
+    local serial_port="${1:-$SERIAL_PORT_DEFAULT}"
+    local original_port="$serial_port"
+    local serial_baud="${2:-$SERIAL_BAUD_DEFAULT}"
+
+    if ! serial_port=$(detect_serial_port "$serial_port"); then
+        echo "Error: Serial port $original_port does not exist, and no /dev/ttyUSB* or /dev/ttyACM* was detected."
+        echo "Check USB passthrough and run: ls -l /dev/ttyUSB* /dev/ttyACM*"
         exit 1
     fi
 
-    # Entry: DTR low + RTS high, then release DTR.
-    # Exit: RTS low + DTR high.
-    stm32flash -b "$serial_baud" -m 8e1 -w "$FIRMWARE_BIN" -v -R \
-        -i '-dtr&rts,dtr:-rts&dtr' "$serial_port"
+    if [ "$serial_port" != "$original_port" ]; then
+        echo "Auto-detected serial port: $serial_port (requested: $original_port)"
+    fi
 
-    echo "=== UART FlyMcu Flash Complete ==="
+    if [ ! -f "$ENCODER_FIRMWARE_BIN" ]; then
+        echo "Error: Firmware file $ENCODER_FIRMWARE_BIN not found! Run 'encoder-build' first."
+        exit 1
+    fi
+
+    if ! command -v stm32flash &> /dev/null; then
+        echo "Error: stm32flash is required for encoder-serial-flymcu mode."
+        echo "Install it with: sudo apt-get install -y stm32flash"
+        exit 1
+    fi
+
+    flash_with_stm32flash_retries "$ENCODER_FIRMWARE_BIN" "$serial_port" "$serial_baud" \
+        "Flashing ENCODER MOTOR app over UART (FlyMcu timing + manual BOOT0 fallback)"
+}
+
+flash_motor86_serial_flymcu() {
+    local serial_port="${1:-$SERIAL_PORT_DEFAULT}"
+    local original_port="$serial_port"
+    local serial_baud="${2:-$SERIAL_BAUD_DEFAULT}"
+
+    if ! serial_port=$(detect_serial_port "$serial_port"); then
+        echo "Error: Serial port $original_port does not exist, and no /dev/ttyUSB* or /dev/ttyACM* was detected."
+        echo "Check USB passthrough and run: ls -l /dev/ttyUSB* /dev/ttyACM*"
+        exit 1
+    fi
+
+    if [ "$serial_port" != "$original_port" ]; then
+        echo "Auto-detected serial port: $serial_port (requested: $original_port)"
+    fi
+
+    if [ ! -f "$MOTOR86_FIRMWARE_BIN" ]; then
+        echo "Error: Firmware file $MOTOR86_FIRMWARE_BIN not found! Run 'motor86-build' first."
+        exit 1
+    fi
+
+    if ! command -v stm32flash &> /dev/null; then
+        echo "Error: stm32flash is required for motor86-serial-flymcu mode."
+        echo "Install it with: sudo apt-get install -y stm32flash"
+        exit 1
+    fi
+
+    flash_with_stm32flash_retries "$MOTOR86_FIRMWARE_BIN" "$serial_port" "$serial_baud" \
+        "Flashing MOTOR86 app over UART (FlyMcu timing + manual BOOT0 fallback)"
 }
 
 clean_build() {
@@ -147,6 +336,18 @@ case "$1" in
         ;;
     "flash")
         flash_firmware
+        ;;
+    "encoder-build")
+        build_encoder_firmware
+        ;;
+    "encoder-serial-flymcu")
+        flash_encoder_serial_flymcu "$2" "$3"
+        ;;
+    "motor86-build")
+        build_motor86_firmware
+        ;;
+    "motor86-serial-flymcu")
+        flash_motor86_serial_flymcu "$2" "$3"
         ;;
     "serial")
         flash_firmware_serial "$2" "$3"

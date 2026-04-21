@@ -131,7 +131,84 @@ sudo apt-get install -y stm32flash
 ./flash.sh serial-flymcu /dev/ttyUSB0 115200
 ```
 
-## 6. ROS2 集成
+### 5.5 编码器应用烧录（已验证流程）
+
+如果你当前使用的是 `USER_ENCODER_MOTOR` 应用（脉冲/方向 + 编码器反馈链路，非 DM4310 CAN），推荐使用以下两步：
+
+```bash
+cd /home/luo/stm-linux
+./flash.sh encoder-build
+sudo ./flash.sh encoder-serial-flymcu /dev/ttyUSB0 115200
+```
+
+说明：
+
+- 上述流程已在本仓库环境验证通过。
+- 如果串口权限不足，必须使用 `sudo`。
+- 烧录前进入系统 Bootloader（通常 BOOT0=1 并复位），烧录完成后 BOOT0 拉回 0 再复位运行。
+
+## 6. 启动控制（USER_ENCODER_MOTOR）
+
+先明确区分两类电机链路：
+
+- `USER_ENCODER_MOTOR`：串口协议 + 脉冲/方向控制（PA8/PA1/PA2 + PE3/PE2/PE14），这是当前键盘脚本与 `wsl_to_stm32.py` 对应的链路。
+- `DM4310`：CAN 总线 MIT 控制（PA12/PA11），命令语义和接线完全不同，不能混用。
+
+### 6.1 硬件与接口确认
+
+- 当前文档默认流程面向 `USER_ENCODER_MOTOR`。
+- 串口控制口为 USART（常用 PA9/PA10），不是 DM4310 的 CAN 口。
+- DM4310 仅在使用专门 CAN 固件/逻辑时才需要接 PA12(CAN_TX)、PA11(CAN_RX)。
+
+### 6.2 上电启动步骤
+
+1. 烧录完成后将 BOOT0 置为 0。
+2. 复位或重新上电。
+3. 打开串口日志（USART1，115200）观察运行信息。
+
+可选串口监视命令：
+
+```bash
+sudo apt-get install -y minicom
+minicom -D /dev/ttyUSB0 -b 115200
+```
+
+### 6.3 当前默认控制行为
+
+当前 `USER_ENCODER_MOTOR/main.c` 的行为是：
+
+- 串口协议接收命令后驱动 1~3 号编码器电机。
+- 心跳闪烁 LED1，并周期打印 `enc cnt m1/m2/m3` 计数日志。
+- 不包含 DM4310 的 MIT 循环逻辑。
+
+### 6.4 键盘控制启动（推荐）
+
+1. 先烧录最新编码器应用：
+
+```bash
+cd /home/luo/stm-linux
+./flash.sh encoder-build
+sudo ./flash.sh encoder-serial-flymcu /dev/ttyUSB0 115200
+```
+
+2. BOOT0 拉回 0，复位后运行键盘控制脚本：
+
+```bash
+cd /home/luo/stm-linux
+python3 -m pip install --user pyserial
+python3 pc_keyboard_control.py --port /dev/ttyUSB0 --baud 115200 --motor 1
+```
+
+3. 按键说明（脚本内置）：
+
+- `W`：加速
+- `S`：减速
+- `A`：反转
+- `D`：正转
+- `Space`：急停
+- `Q`：退出并停机
+
+## 7. ROS2 集成
 
 ROS2 功能位于：`ros2_ws/src/stm32_robot_bridge/`，包含：
 
@@ -155,34 +232,43 @@ ros2 run stm32_robot_bridge serial_bridge_node
 ros2 run stm32_robot_bridge teleop_keyboard_node
 ```
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 `STM32_Programmer_CLI: command not found`
+### 8.1 `STM32_Programmer_CLI: command not found`
 
 - 原因：CubeProgrammer 未安装或 PATH 未生效。
 - 处理：重新执行 `./install_cubeprogrammer.sh`，并 `source ~/.bashrc`。
 
-### 7.2 `No debug probe detected`
+### 8.2 `No debug probe detected`
 
 - 原因：ST-Link 未识别、接线不正确或目标板未上电。
 - 处理：检查 USB、SWD 接线、供电与权限。
 
-### 7.3 DFU 报 `Target device not found`
+### 8.3 DFU 报 `Target device not found`
 
 - 原因：未正确进入 DFU 模式。
 - 处理：确认 BOOT 引脚设置与复位时序。
 
-### 7.4 构建目录迁移后 CMake 报错
+### 8.4 已烧录但电机不转 / 无反馈
+
+- 先确认当前固件是否为 `encoder-build` 生成的编码器应用。
+- 当前编码器电机为直流有刷电机链路（PWM+DIR），不是 DM4310 CAN。
+- 当前 BTS7960 路径使用双 PWM 互斥控制：任意时刻只允许一路输出非零占空。
+- 现用映射：`L_PWM -> PB8(TIM4_CH3)`，`R_PWM -> PB9(TIM4_CH4)`。
+- 优先检查 PWM/DIR/EN 接线与电源地是否共地，再检查电机驱动使能状态。
+- 确认 BOOT0 已拉回 0（否则仍停留在系统 Bootloader）。
+
+### 8.5 构建目录迁移后 CMake 报错
 
 - 原因：`build/CMakeCache.txt` 记录了旧路径。
 - 处理：`flash.sh` 已内置检测并自动重建构建目录。
 
-### 7.5 ROS2 在中文路径下接口构建异常
+### 8.6 ROS2 在中文路径下接口构建异常
 
 - 现象：`rosidl_generate_interfaces` 相关路径解析错误。
 - 建议：ROS2 工作区使用纯 ASCII 路径。
 
-## 8. 清理与维护
+## 9. 清理与维护
 
 清理固件构建目录：
 
@@ -196,12 +282,12 @@ ros2 run stm32_robot_bridge teleop_keyboard_node
 rm -rf ros2_ws/build ros2_ws/install ros2_ws/log
 ```
 
-## 9. 后续可选改进
+## 10. 后续可选改进
 
 1. 增加 CI：自动执行交叉编译并上传产物。
 2. 完善协议文档：补齐串口帧格式和命令表。
 3. 增加硬件接线图：降低首次上手门槛。
 
-## 10. 许可
+## 11. 许可
 
 当前仓库尚未明确 License，如需开源发布建议补充 `LICENSE` 文件。

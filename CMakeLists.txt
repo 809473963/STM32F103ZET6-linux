@@ -1,6 +1,28 @@
 cmake_minimum_required(VERSION 3.10)
 project(STM32_KEY_PROJECT C CXX ASM)
 
+option(ENCODER_MOTOR_APP "Build encoder motor app" OFF)
+option(MOTOR86_APP "Build 86 stepper motor app" OFF)
+option(HELLO_ACK_APP "Build hello/ack serial app" OFF)
+
+if((ENCODER_MOTOR_APP AND MOTOR86_APP) OR
+   (ENCODER_MOTOR_APP AND HELLO_ACK_APP) OR
+   (MOTOR86_APP AND HELLO_ACK_APP))
+    message(FATAL_ERROR "Only one app option can be enabled at a time")
+endif()
+
+if(ENCODER_MOTOR_APP)
+    add_definitions(-DENCODER_MOTOR_APP)
+endif()
+
+if(MOTOR86_APP)
+    add_definitions(-DMOTOR86_APP)
+endif()
+
+if(HELLO_ACK_APP)
+    add_definitions(-DHELLO_ACK_APP)
+endif()
+
 # Add support for assembler
 enable_language(ASM)
 
@@ -30,7 +52,23 @@ set(CMAKE_EXE_LINKER_FLAGS "${MCU_FLAGS} -T${LINKER_SCRIPT} -Wl,--gc-sections -W
 
 # Automatically find all C source files in the specified directories
 file(GLOB_RECURSE USER_SOURCES "USER/*.c")
+if(ENCODER_MOTOR_APP)
+    list(FILTER USER_SOURCES EXCLUDE REGEX "USER/main\\.c$")
+    file(GLOB_RECURSE USER_ENCODER_SOURCES "USER_ENCODER_MOTOR/*.c")
+    list(APPEND USER_SOURCES ${USER_ENCODER_SOURCES})
+endif()
+if(MOTOR86_APP)
+    list(FILTER USER_SOURCES EXCLUDE REGEX "USER/main\\.c$")
+    file(GLOB_RECURSE USER_MOTOR86_SOURCES "USER_MOTOR86/*.c")
+    list(APPEND USER_SOURCES ${USER_MOTOR86_SOURCES})
+endif()
+if(HELLO_ACK_APP)
+    list(FILTER USER_SOURCES EXCLUDE REGEX "USER/main\\.c$")
+    file(GLOB_RECURSE USER_HELLO_SOURCES "USER_HELLO/*.c")
+    list(APPEND USER_SOURCES ${USER_HELLO_SOURCES})
+endif()
 file(GLOB_RECURSE HARDWARE_SOURCES "HARDWARE/*.c")
+list(FILTER HARDWARE_SOURCES EXCLUDE REGEX "HARDWARE/LEGACY/.*\\.c$")
 file(GLOB_RECURSE SYSTEM_SOURCES "SYSTEM/*.c")
 file(GLOB_RECURSE FWLIB_SOURCES "STM32F10x_FWLib/src/*.c")
 
@@ -62,6 +100,18 @@ include_directories(
     SYSTEM/usart
     USER
 )
+
+if(ENCODER_MOTOR_APP)
+    include_directories(USER_ENCODER_MOTOR)
+endif()
+
+if(MOTOR86_APP)
+    include_directories(USER_MOTOR86)
+endif()
+
+if(HELLO_ACK_APP)
+    include_directories(USER_HELLO)
+endif()
 
 # Auto-add all subdirectories under HARDWARE
 file(GLOB HARDWARE_DIRS LIST_DIRECTORIES true "HARDWARE/*")

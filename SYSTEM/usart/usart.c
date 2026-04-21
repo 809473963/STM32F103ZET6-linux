@@ -1,6 +1,10 @@
 #include "sys.h"
 #include "usart.h"	  
+#if defined(HELLO_ACK_APP)
+#include "hello_ack.h"
+#else
 #include "protocol.h"
+#endif
 ////////////////////////////////////////////////////////////////////////////////// 	 
 //如果使用ucos,则包括下面的头文件即可.
 #if SYSTEM_SUPPORT_OS
@@ -45,6 +49,8 @@ struct __FILE
 }; 
 
 FILE __stdout;       
+static u8 g_usart2_ready = 0;
+static u8 g_usart3_ready = 0;
 //定义_sys_exit()以避免使用半主机模式    
 void _sys_exit(int x) 
 { 
@@ -55,6 +61,14 @@ int fputc(int ch, FILE *f)
 {      
 	while((USART1->SR&0X40)==0);//循环发送,直到发送完毕   
     USART1->DR = (u8) ch;      
+	if (g_usart2_ready) {
+		while((USART2->SR&0X40)==0);
+		USART2->DR = (u8) ch;
+	}
+	if (g_usart3_ready) {
+		while((USART3->SR&0X40)==0);
+		USART3->DR = (u8) ch;
+	}
 	return ch;
 }
 #endif 
@@ -94,7 +108,12 @@ void uart_init(u32 bound)
 	USART_InitTypeDef USART_InitStructure;
 	NVIC_InitTypeDef NVIC_InitStructure;
 
-	RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1|RCC_APB2Periph_GPIOA, ENABLE);	//使能USART1，GPIOA时钟
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1|RCC_APB2Periph_GPIOA|RCC_APB2Periph_GPIOB, ENABLE);	//使能USART1/GPIOA/GPIOB时钟
+#if defined(ENCODER_MOTOR_APP)
+		RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART2|RCC_APB1Periph_USART3, ENABLE);
+#else
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART2|RCC_APB1Periph_USART3, ENABLE);
+#endif
 
 	//USART1_TX   GPIOA.9
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9; //PA.9
@@ -114,6 +133,18 @@ void uart_init(u32 bound)
 	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;			//IRQ通道使能
 	NVIC_Init(&NVIC_InitStructure);	//根据指定的参数初始化VIC寄存器
 
+	NVIC_InitStructure.NVIC_IRQChannel = USART2_IRQn;
+	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority=3;
+	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 2;
+	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_Init(&NVIC_InitStructure);
+
+	NVIC_InitStructure.NVIC_IRQChannel = USART3_IRQn;
+	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority=3;
+	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 1;
+	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_Init(&NVIC_InitStructure);
+
 	//USART 初始化设置
 
 	USART_InitStructure.USART_BaudRate = bound;//串口波特率
@@ -127,6 +158,51 @@ void uart_init(u32 bound)
   USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);//开启串口接受中断
   USART_Cmd(USART1, ENABLE);                    //使能串口1 
 
+	// USART2_TX PA2, USART2_RX PA3
+	// ENCODER_MOTOR_APP keeps USART2 RX enabled on PA3 for compatibility,
+	// while PA2 TX is left untouched to avoid conflict with motor PWM.
+#if defined(ENCODER_MOTOR_APP)
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+	GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+	USART_InitStructure.USART_Mode = USART_Mode_Rx;
+	USART_Init(USART2, &USART_InitStructure);
+	USART_ITConfig(USART2, USART_IT_RXNE, ENABLE);
+	USART_Cmd(USART2, ENABLE);
+	g_usart2_ready = 0;
+	USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
+#else
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
+	GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+	GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+	USART_Init(USART2, &USART_InitStructure);
+	USART_ITConfig(USART2, USART_IT_RXNE, ENABLE);
+	USART_Cmd(USART2, ENABLE);
+	g_usart2_ready = 1;
+#endif
+
+	// USART3_TX PB10, USART3_RX PB11
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
+	GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_11;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+	GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+	USART_Init(USART3, &USART_InitStructure);
+	USART_ITConfig(USART3, USART_IT_RXNE, ENABLE);
+	USART_Cmd(USART3, ENABLE);
+	g_usart3_ready = 1;
+
 }
 
 void USART1_IRQHandler(void)                	//串口1中断服务程序
@@ -138,10 +214,54 @@ void USART1_IRQHandler(void)                	//串口1中断服务程序
 	        if(USART_GetITStatus(USART1, USART_IT_RXNE) != RESET)
         {
             Res = USART_ReceiveData(USART1);
-            Protocol_ParseByte(Res); // 将接收到的字节交给通信协议解析器
+#if defined(HELLO_ACK_APP)
+			HelloAck_ParseByte(Res);
+#else
+			Protocol_ParseByte(Res); // 将接收到的字节交给通信协议解析器
+#endif
         } 
 #if SYSTEM_SUPPORT_OS 	//如果SYSTEM_SUPPORT_OS为真，则需要支持OS.
 	OSIntExit();  											 
 #endif
 } 
+
+void USART3_IRQHandler(void)
+{
+	u8 Res;
+#if SYSTEM_SUPPORT_OS
+	OSIntEnter();
+#endif
+	if(USART_GetITStatus(USART3, USART_IT_RXNE) != RESET)
+	{
+		Res = USART_ReceiveData(USART3);
+#if defined(HELLO_ACK_APP)
+		HelloAck_ParseByte(Res);
+#else
+		Protocol_ParseByte(Res);
+#endif
+	}
+#if SYSTEM_SUPPORT_OS
+	OSIntExit();
+#endif
+}
+
+void USART2_IRQHandler(void)
+{
+	u8 Res;
+#if SYSTEM_SUPPORT_OS
+	OSIntEnter();
+#endif
+	if(USART_GetITStatus(USART2, USART_IT_RXNE) != RESET)
+	{
+		Res = USART_ReceiveData(USART2);
+#if defined(HELLO_ACK_APP)
+		HelloAck_ParseByte(Res);
+#else
+		Protocol_ParseByte(Res);
+#endif
+	}
+#if SYSTEM_SUPPORT_OS
+	OSIntExit();
+#endif
+}
 #endif

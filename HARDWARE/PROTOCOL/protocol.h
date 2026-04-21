@@ -10,6 +10,7 @@
 #define CMD_STOP_ALL         0x02
 #define CMD_GET_STATUS       0x03
 #define CMD_SET_ENABLE       0x04
+#define CMD_SET_MOTOR_VEL_MRAD 0x05
 
 // 内部处理状态机
 typedef enum {
@@ -33,6 +34,7 @@ typedef struct {
 void Protocol_Init(void);
 void Protocol_ParseByte(uint8_t byte);
 void Protocol_HandleFrame(ProtocolFrame_t* frame);
+void Protocol_TickMs(uint16_t elapsed_ms);
 
 // 用于发送状态回复
 void Protocol_SendStatus(void);
