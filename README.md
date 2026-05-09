@@ -4,6 +4,8 @@
 
 > **降级简化版**（仅 DM4310+DM3510 两轴 + WHEELTEC 底盘）见 [`simplified` 分支](../../tree/simplified)。
 
+---
+
 ## 硬件配置
 
 | 硬件 | 数量 | 驱动方式 |
@@ -35,11 +37,13 @@
 │   ├── PROTOCOL/           ← PC↔STM32 串口二进制协议
 │   └── BEEP/ KEY/ LED/
 │
-├── ros2_ws/                ← ROS2 机械臂控制工作空间（见 ros2_ws/README.md）
-│   ├── stm32_robot_bridge/ ← 串口↔ROS2 话题桥接 + 键盘控制
-│   └── stm32_serial_bridge/← DM4310 参数调节 tkinter GUI
+├── ros2_ws/                ← ROS2 完整工作空间（见 ros2_ws/README.md）
+│   ├── stm32_robot_bridge/ ← ① 机械臂串口桥接+键控  ② 底盘状态 UDP→ROS
+│   ├── stm32_serial_bridge/← DM4310 参数 tkinter 实时调节 GUI
+│   ├── wheeltec_bridge/    ← WHEELTEC C10B 底盘串口控制 + RViz 可视化
+│   └── chassis_control/    ← CAN 差速控制（DM4310 MIT + DM3510 VEL）
 │
-├── images/                 ← 硬件照片、接线图（待补充）
+├── images/                 ← 硬件照片、接线图
 │
 ├── CMakeLists.txt          ← 固件构建入口
 ├── arm-none-eabi-gcc.cmake ← 交叉编译工具链
@@ -90,7 +94,7 @@ STM32_Programmer_CLI --version  # 验证
 ./flash.sh hello-build
 ```
 
-产物位于对应 `build_encoder/`、`build_motor86/`、`build_hello/` 目录。
+产物位于对应 `build_encoder/`、`build_motor86/`、`build_hello/` 目录（已加入 .gitignore）。
 
 ---
 
@@ -107,10 +111,9 @@ STM32_Programmer_CLI --version  # 验证
 
 ---
 
-## 键盘控制（编码器电机）
+## 键盘控制（编码器电机，无 ROS）
 
 ```bash
-# 确保烧录了 encoder-build 后
 python3 -m pip install --user pyserial
 python3 pc_keyboard_control.py --port /dev/ttyUSB0 --baud 115200 --motor 1
 ```
@@ -124,18 +127,63 @@ python3 pc_keyboard_control.py --port /dev/ttyUSB0 --baud 115200 --motor 1
 
 ---
 
-## ROS2 控制（机械臂）
+## ROS2 工作空间
 
-ROS2 工作空间说明见 [`ros2_ws/README.md`](ros2_ws/README.md)。
+完整说明见 [`ros2_ws/README.md`](ros2_ws/README.md)，本工作空间包含四个包：
 
-快速启动：
+| 包 | 节点 | 用途 |
+|---|---|---|
+| `stm32_robot_bridge` | `serial_bridge_node`<br>`teleop_keyboard_node`<br>`chassis_state_udp_bridge_node` | 机械臂串口控制（初版）<br>键盘 → MotorCommand<br>底盘状态 UDP→ROS |
+| `stm32_serial_bridge` | `tuning_slider_gui` | DM4310 PD 参数实时调节 GUI |
+| `wheeltec_bridge` | `serial_node` `keyboard_node` `chassis_marker_node` | WHEELTEC 底盘控制 + RViz |
+| `chassis_control` | `logic_node` | CAN 差速控制（简化版硬件适用） |
+
+### 构建
 
 ```bash
 cd ros2_ws
+rosdep install --from-paths src --ignore-src -r -y
 colcon build
 source install/setup.bash
-ros2 launch stm32_robot_bridge robot_bridge.launch.py
 ```
+
+### 机械臂键盘控制（初版 encoder-build 固件）
+
+```bash
+# launch 文件一键启动（串口桥接 + 键盘控制）
+ros2 launch stm32_robot_bridge robot_bridge.launch.py
+
+# 或分开启动
+ros2 run stm32_robot_bridge serial_bridge_node \
+  --ros-args -p port_name:=/dev/ttyUSB0 -p baud_rate:=115200
+ros2 run stm32_robot_bridge teleop_keyboard_node
+```
+
+### DM4310 参数调节 GUI
+
+```bash
+ros2 launch stm32_serial_bridge stm32_tuning_gui.launch.py
+```
+
+### WHEELTEC 底盘键盘遥控
+
+```bash
+ros2 launch wheeltec_bridge wheeltec_teleop.launch.py
+```
+
+### 底盘状态接入 ROS（配合树莓派 UDP 转发）
+
+```bash
+# 树莓派侧（先运行）
+python3 pi_chassis_udp_forwarder.py --serial-port /dev/ttyACM0 \
+  --wsl-ip 192.168.10.1 --udp-port 15050
+
+# WSL 侧
+ros2 run stm32_robot_bridge chassis_state_udp_bridge_node \
+  --ros-args -p udp_port:=15050
+```
+
+> 确保两端 `export ROS_DOMAIN_ID=<相同值>`，详见 `ros2_ws/README.md`。
 
 ---
 
@@ -143,8 +191,8 @@ ros2 launch stm32_robot_bridge robot_bridge.launch.py
 
 | 分支 | 说明 |
 |---|---|
-| `main` | 初版完整配置（本文档）：DM4310 + 86步进 + 4×编码器 + ROS2 调参 GUI |
-| `simplified` | 最终降级成品：仅 DM4310(MIT) + DM3510(VEL)，合并 aia_ws，重组目录结构 |
+| `main` | **初版完整配置**：DM4310 + 86步进×2 + 编码器电机×4；ros2_ws 含全部四个包 |
+| `simplified` | **最终成品**：仅 DM4310(MIT)+DM3510(VEL)；固件按 firmware/pi/tools/docs 重组 |
 
 ---
 
@@ -152,6 +200,11 @@ ros2 launch stm32_robot_bridge robot_bridge.launch.py
 
 **串口权限不足**：`sudo usermod -aG dialout $USER`，重新登录生效
 
-**构建缓存过期**：`./flash.sh clean && ./flash.sh build`
+**构建缓存过期**：`./flash.sh clean && ./flash.sh encoder-build`
 
-**DM4310 电机不响应**：确认 CAN 接线（PA12 TX / PA11 RX）、终端电阻（120Ω）、共地
+**DM4310 不响应**：确认 CAN 接线（PA12 TX / PA11 RX）、终端电阻（120Ω）、共地
+
+**ROS2 找不到 motor_control_msgs**：如不使用 `stm32_serial_bridge` 可跳过：
+```bash
+colcon build --packages-ignore stm32_serial_bridge
+```
