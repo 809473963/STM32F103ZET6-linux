@@ -1,25 +1,27 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-import os
-from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
-    pkg_dir = get_package_share_directory('stm32_robot_bridge')
-    config_file = os.path.join(pkg_dir, 'config', 'serial_config.yaml')
+    udp_port = LaunchConfiguration('udp_port')
 
     return LaunchDescription([
-        Node(
-            package='stm32_robot_bridge',
-            executable='serial_bridge_node',
-            name='serial_bridge_node',
-            output='screen',
-            parameters=[config_file]
+        DeclareLaunchArgument(
+            'udp_port',
+            default_value='15050',
+            description='UDP port receiving Raspberry Pi chassis state packets'
         ),
         Node(
             package='stm32_robot_bridge',
-            executable='teleop_keyboard_node',
-            name='teleop_keyboard_node',
+            executable='chassis_state_udp_bridge_node',
+            name='chassis_state_udp_bridge_node',
             output='screen',
-            prefix=['xterm -e'] # Opens a new terminal for keyboard input if possible
-        )
+            parameters=[{
+                'udp_port': udp_port,
+                'odom_frame': 'odom',
+                'base_frame': 'base_link',
+                'publish_tf': True,
+            }]
+        ),
     ])

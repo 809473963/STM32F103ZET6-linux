@@ -1,4 +1,7 @@
-serial_bridge_node:
+chassis_state_udp_bridge_node:
   ros__parameters:
-    port_name: "/dev/ttyUSB0"
-    baud_rate: 115200
+    udp_port: 15050
+    odom_frame: "odom"
+    base_frame: "base_link"
+    publish_tf: true
+    complementary_alpha: 0.98

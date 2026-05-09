@@ -1,24 +1,26 @@
-# Build artifacts
-build/
-OBJ/
+# ── Firmware build artifacts ──────────────────────────────────
+firmware/build/
+firmware/OBJ/
+firmware/__pycache__/
+firmware/**/*.pyc
 
-# Python cache
-__pycache__/
-*.pyc
+# Keil MDK project files (Linux build uses CMake only)
+firmware/**/*.uvprojx
+firmware/**/*.uvoptx
+firmware/**/*.uvguix*
+firmware/**/JLinkSettings.ini
+firmware/**/*.map
+firmware/**/*.lst
+firmware/**/DebugConfig/
 
-# ROS2 build outputs
+# ── ROS2 build artifacts ───────────────────────────────────────
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
-ros2_ws/build_clean/
-ros2_ws/install_clean/
+ros2_ws/**/__pycache__/
+ros2_ws/**/*.pyc
 
-# CMake generated files (if in source tree)
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-
-# Editor/OS
+# ── Editor / OS ────────────────────────────────────────────────
 .vscode/
 .DS_Store
+*:Zone.Identifier

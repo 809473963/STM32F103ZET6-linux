@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+OBJ/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# CMake generated files (if in source tree)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Keil MDK project files (Linux build uses CMake only)
+*.uvprojx
+*.uvoptx
+*.uvguix.*
+*.uvguix
+JLinkSettings.ini
+*.map
+*.lst
+DebugConfig/
+
+# Windows Zone.Identifier streams
+*:Zone.Identifier
+
+# Editor/OS
+.vscode/
+.DS_Store

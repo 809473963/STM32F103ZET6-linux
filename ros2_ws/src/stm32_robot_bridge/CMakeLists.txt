@@ -9,41 +9,29 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 
-# Generate custom messages
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/MotorCommand.msg"
-  "msg/MotorStatus.msg"
+add_executable(chassis_state_udp_bridge_node src/chassis_state_udp_bridge_node.cpp)
+target_compile_features(chassis_state_udp_bridge_node PUBLIC cxx_std_17)
+ament_target_dependencies(chassis_state_udp_bridge_node
+  rclcpp
+  std_msgs
+  geometry_msgs
+  sensor_msgs
+  nav_msgs
+  tf2
+  tf2_ros
 )
 
-ament_export_dependencies(rosidl_default_runtime)
-
-# Serial Bridge Node
-add_executable(serial_bridge_node src/serial_bridge_node.cpp)
-target_include_directories(serial_bridge_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
-target_compile_features(serial_bridge_node PUBLIC c_std_99 cxx_std_17)  
-ament_target_dependencies(serial_bridge_node rclcpp std_msgs geometry_msgs)
-rosidl_target_interfaces(serial_bridge_node ${PROJECT_NAME} "rosidl_typesupport_cpp")
-
-# Teleop Keyboard Node
-add_executable(teleop_keyboard_node src/teleop_keyboard_node.cpp)
-target_include_directories(teleop_keyboard_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
-target_compile_features(teleop_keyboard_node PUBLIC c_std_99 cxx_std_17)
-ament_target_dependencies(teleop_keyboard_node rclcpp std_msgs geometry_msgs)
-rosidl_target_interfaces(teleop_keyboard_node ${PROJECT_NAME} "rosidl_typesupport_cpp")
-
 install(TARGETS
-  serial_bridge_node
-  teleop_keyboard_node
+  chassis_state_udp_bridge_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY launch config msg
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
